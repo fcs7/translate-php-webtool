@@ -83,6 +83,41 @@ except ImportError:
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode)
 
 # ============================================================================
+# Cleanup periodico (background thread)
+# ============================================================================
+
+_CLEANUP_INTERVAL = 86400  # 24 horas em segundos
+
+
+def _cleanup_loop():
+    """Thread daemon que roda cleanup a cada 24h."""
+    import time as _time
+    _time.sleep(60)  # esperar app estabilizar
+    while True:
+        try:
+            log.info('[CLEANUP] Iniciando limpeza periodica...')
+            from backend.translator import expire_job_files
+            total_freed = 0
+            total_jobs = 0
+            for expired_id in cleanup_expired_jobs():
+                freed, _ = expire_job_files(expired_id)
+                total_freed += freed
+                total_jobs += 1
+            cleanup_expired_sessions()
+            if total_jobs > 0:
+                log.info(f'[CLEANUP] {total_jobs} jobs expirados limpos, '
+                         f'{total_freed / (1024*1024):.1f} MB liberados')
+            else:
+                log.info('[CLEANUP] Nenhum job expirado encontrado')
+        except Exception as e:
+            log.error(f'[CLEANUP] Erro na limpeza periodica: {e}')
+        _time.sleep(_CLEANUP_INTERVAL)
+
+
+_cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True, name='cleanup')
+_cleanup_thread.start()
+
+# ============================================================================
 # Autenticacao
 # ============================================================================
 
@@ -864,8 +899,9 @@ def serve_static(path):
 if __name__ == '__main__':
     cleanup_old_jobs(max_age_hours=168)  # 7 dias
     cleanup_expired_sessions()
-    # Limpar arquivos de jobs expirados (7 dias)
+    # Limpar arquivos de jobs expirados (preserva historico)
+    from backend.translator import expire_job_files as _expire
     for _expired_id in cleanup_expired_jobs():
-        delete_job(_expired_id)
+        _expire(_expired_id)
     log.info('Servidor iniciando em http://localhost:5000')
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
