@@ -158,6 +158,35 @@ export async function getActivity(limit = 50) {
   return res.json()
 }
 
+// ─── Quota e gerenciamento de historico ──────────────────────────────────────
+
+export async function getQuota() {
+  const res = await fetch(`${API_BASE}/quota`, { credentials: 'include' })
+  if (!res.ok) throw new Error('Erro ao carregar quota')
+  return res.json()
+}
+
+export async function deleteHistoryJob(jobId) {
+  const res = await fetch(`${API_BASE}/history/${jobId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao deletar job')
+  return data
+}
+
+export async function deleteHistoryBulk(expiredOnly = false) {
+  const qs = expiredOnly ? '?expired_only=true' : ''
+  const res = await fetch(`${API_BASE}/history${qs}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao deletar jobs')
+  return data
+}
+
 // ─── Admin ──────────────────────────────────────────────────────────────────
 
 export async function adminGetUsers(token) {
@@ -225,6 +254,17 @@ export async function adminLogin(token) {
     throw new Error(data.error || 'Acesso negado')
   }
   return res.json()
+}
+
+export async function adminReconcileStorage(token) {
+  const res = await fetch(`${API_BASE}/admin/reconcile-storage`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao reconciliar storage')
+  return data
 }
 
 // ─── Cache ───────────────────────────────────────────────────────────────────
