@@ -594,6 +594,52 @@ def get_all_job_history(limit=100):
         return [dict(r) for r in rows]
 
 
+def get_job_history_entry(job_id):
+    """Retorna um registro do historico pelo job_id, ou None."""
+    with _db_conn() as conn:
+        row = conn.execute(
+            "SELECT job_id, user_email, status, total_files, total_strings, "
+            "translated_strings, created_at, started_at, finished_at, "
+            "expires_at, file_available, COALESCE(file_size_bytes, 0) as file_size_bytes "
+            "FROM job_history WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def mark_job_files_expired(job_id):
+    """Marca file_available=0 para um job especifico no historico."""
+    try:
+        with _db_lock:
+            with _db_conn() as conn:
+                conn.execute(
+                    "UPDATE job_history SET file_available = 0 WHERE job_id = ?",
+                    (job_id,),
+                )
+    except Exception as e:
+        log.error(f'[JOB_HISTORY] Erro ao marcar expirado {job_id}: {e}')
+
+
+def get_user_deletable_jobs(user_email, limit=10):
+    """Retorna jobs do usuario com arquivos disponiveis, maiores primeiro."""
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT job_id, COALESCE(file_size_bytes, 0) as file_size_bytes, "
+            "created_at, expires_at "
+            "FROM job_history WHERE user_email = ? AND file_available = 1 "
+            "ORDER BY file_size_bytes DESC LIMIT ?",
+            (user_email, limit),
+        ).fetchall()
+        now = datetime.now().isoformat()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d['size_mb'] = round(d['file_size_bytes'] / (1024 * 1024), 1)
+            d['expired'] = d['expires_at'] < now
+            result.append(d)
+        return result
+
+
 def cleanup_expired_jobs():
     """Marca jobs expirados como file_available=0 e retorna job_ids para limpeza de arquivos."""
     now = datetime.now().isoformat()

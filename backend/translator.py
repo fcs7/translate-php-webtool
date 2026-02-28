@@ -604,6 +604,66 @@ def delete_job(job_id):
     return True
 
 
+def expire_job_files(job_id):
+    """Remove arquivos de um job mas preserva historico no DB.
+    Diferente de delete_job() que remove tudo, esta funcao:
+    - Remove pasta jobs/{job_id}/ do disco
+    - Atualiza storage_used_bytes do usuario (negativo)
+    - Marca file_available=0 no job_history
+    - NAO deleta registros do job_history
+    Retorna (freed_bytes, user_email) ou (0, None) se nao encontrou.
+    """
+    from backend.auth import get_job_history_entry, mark_job_files_expired
+
+    # Buscar info do job (memoria > DB jobs > job_history)
+    job = _get(job_id)
+    file_size = job.file_size_bytes if job else 0
+    user_email = job.user_email if job else None
+
+    if not job:
+        db_job = get_job_db(job_id)
+        if db_job:
+            file_size = db_job.get('file_size_bytes', 0)
+            user_email = db_job.get('user_email')
+
+    if not user_email:
+        history = get_job_history_entry(job_id)
+        if history:
+            file_size = history.get('file_size_bytes', 0)
+            user_email = history.get('user_email')
+
+    if not user_email:
+        log.warning(f'[{job_id}] expire_job_files: job nao encontrado')
+        return 0, None
+
+    # Remover arquivos do disco
+    job_dir = os.path.join(JOBS_FOLDER, job_id)
+    freed_bytes = 0
+    if os.path.exists(job_dir):
+        freed_bytes = _get_dir_size(job_dir)
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+    # Se nao tinha tamanho no DB, usar tamanho real do disco
+    if freed_bytes == 0:
+        freed_bytes = file_size
+
+    # Marcar como expirado no historico
+    mark_job_files_expired(job_id)
+
+    # Remover da tabela jobs ativa (se existir)
+    delete_job_db(job_id)
+
+    # Remover da memoria
+    _pop(job_id)
+
+    # Devolver quota
+    if user_email and freed_bytes > 0:
+        update_storage_used(user_email, -freed_bytes)
+
+    log.info(f'[{job_id}] Arquivos expirados ({freed_bytes / (1024*1024):.1f} MB liberados)')
+    return freed_bytes, user_email
+
+
 def list_jobs(user_email=None):
     """Combina jobs em memória (prioridade) + DB (historico)."""
     merged = {}
