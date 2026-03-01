@@ -189,7 +189,21 @@ export default function App() {
                   </p>
                 </div>
 
-                {showUpload && (
+                {showUpload && user?.quota?.percent >= 100 ? (
+                  <div className="glass-light border border-red-500/20 rounded-lg p-4 space-y-2 text-center">
+                    <p className="text-red-400 text-sm font-medium">Armazenamento cheio</p>
+                    <p className="text-gray-500 text-xs">
+                      Voce atingiu {user.quota.used_mb} MB / {user.quota.limit_mb} MB.
+                      Libere espaco no seu historico para enviar novos arquivos.
+                    </p>
+                    <button
+                      onClick={() => setPage('history')}
+                      className="text-xs text-accent-400 hover:text-accent-300 transition-colors"
+                    >
+                      Ir para Minha Conta
+                    </button>
+                  </div>
+                ) : showUpload && (
                   <FileUpload onUpload={handleUpload} disabled={false} />
                 )}
 
