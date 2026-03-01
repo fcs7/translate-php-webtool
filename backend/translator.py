@@ -333,7 +333,8 @@ def _translate_file(src_path, dst_path, delay, job, socketio=None):
             if socketio and job.total_strings > 0:
                 with _progress_lock:
                     job.progress = int((job.translated_strings / job.total_strings) * 100)
-                socketio.emit('translation_progress', job.to_dict(), room=job.job_id)
+                    snapshot = job.to_dict()
+                socketio.emit('translation_progress', snapshot, room=job.job_id)
 
             time.sleep(delay)
 
@@ -422,7 +423,8 @@ def _run(job, socketio):
                     job.current_file = rel
                     if job.total_strings > 0:
                         job.progress = int((job.translated_strings / job.total_strings) * 100)
-                socketio.emit('translation_progress', job.to_dict(), room=job.job_id)
+                    snapshot = job.to_dict()
+                socketio.emit('translation_progress', snapshot, room=job.job_id)
 
                 if job._cancel_flag:
                     cancelled = True

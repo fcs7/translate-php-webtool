@@ -2,6 +2,7 @@
 
 import hmac
 import json
+import threading
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
@@ -11,6 +12,10 @@ from backend.config import (
     PLAN_STORAGE_LIMITS, PLAN_PRICES, PLAN_DURATION_DAYS, log,
 )
 from backend.auth import _db_lock, _db_conn, log_activity
+
+# Lock por email para evitar criacao duplicada de customer no Asaas
+_customer_locks = {}
+_customer_locks_guard = threading.Lock()
 
 
 # ============================================================================
@@ -67,6 +72,15 @@ def init_billing_db():
 
     log.info('[BILLING] Tabelas de billing inicializadas')
 
+    # Alertas de configuracao critica
+    if ASAAS_API_KEY:
+        if not ASAAS_WEBHOOK_TOKEN:
+            log.error('[BILLING] ASAAS_WEBHOOK_TOKEN nao configurado — '
+                      'webhooks serao rejeitados e planos NUNCA serao ativados!')
+        if 'sandbox' in ASAAS_API_URL:
+            log.warning('[BILLING] ASAAS_API_URL aponta para sandbox — '
+                        'pagamentos NAO serao processados em producao!')
+
 
 # ============================================================================
 # Asaas API (stdlib — urllib.request)
@@ -95,35 +109,45 @@ def _asaas_request(method, endpoint, data=None):
         raise RuntimeError('Erro de conexao com Asaas: %s' % e.reason)
 
 
+def _get_customer_lock(email):
+    """Retorna lock dedicado para criacao de customer por email."""
+    with _customer_locks_guard:
+        if email not in _customer_locks:
+            _customer_locks[email] = threading.Lock()
+        return _customer_locks[email]
+
+
 def get_or_create_asaas_customer(email):
     """Retorna asaas_customer_id para o usuario. Cria no Asaas se nao existir."""
     email = email.strip().lower()
 
-    with _db_lock:
-        with _db_conn() as conn:
-            row = conn.execute(
-                "SELECT asaas_customer_id FROM users WHERE email = ?",
-                (email,),
-            ).fetchone()
-            if row and row['asaas_customer_id']:
-                return row['asaas_customer_id']
+    # Per-email lock evita criacao duplicada em requests concorrentes
+    with _get_customer_lock(email):
+        with _db_lock:
+            with _db_conn() as conn:
+                row = conn.execute(
+                    "SELECT asaas_customer_id FROM users WHERE email = ?",
+                    (email,),
+                ).fetchone()
+                if row and row['asaas_customer_id']:
+                    return row['asaas_customer_id']
 
-    # Criar customer no Asaas
-    result = _asaas_request('POST', '/v3/customers', {
-        'name': email.split('@')[0],
-        'email': email,
-    })
-    customer_id = result['id']
+        # Criar customer no Asaas (fora do _db_lock para nao bloquear I/O)
+        result = _asaas_request('POST', '/v3/customers', {
+            'name': email.split('@')[0],
+            'email': email,
+        })
+        customer_id = result['id']
 
-    with _db_lock:
-        with _db_conn() as conn:
-            conn.execute(
-                "UPDATE users SET asaas_customer_id = ? WHERE email = ?",
-                (customer_id, email),
-            )
+        with _db_lock:
+            with _db_conn() as conn:
+                conn.execute(
+                    "UPDATE users SET asaas_customer_id = ? WHERE email = ?",
+                    (customer_id, email),
+                )
 
-    log.info('[BILLING] Customer Asaas criado: %s -> %s', email, customer_id)
-    return customer_id
+        log.info('[BILLING] Customer Asaas criado: %s -> %s', email, customer_id)
+        return customer_id
 
 
 def create_pix_payment(email, plan):

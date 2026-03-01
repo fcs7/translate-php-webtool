@@ -231,7 +231,9 @@ export async function adminToggleAdmin(token, userId) {
     credentials: 'include',
     headers: { Authorization: `Bearer ${token}` },
   })
-  return res.json()
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao alternar admin')
+  return data
 }
 
 export async function adminDeleteUser(token, userId) {
@@ -240,7 +242,9 @@ export async function adminDeleteUser(token, userId) {
     credentials: 'include',
     headers: { Authorization: `Bearer ${token}` },
   })
-  return res.json()
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao deletar usuario')
+  return data
 }
 
 export async function adminLogin(token) {

@@ -51,7 +51,7 @@ SMTP_FROM = os.environ.get('SMTP_FROM', 'Traducao <noreply@example.com>')
 
 # Asaas — pagamentos Pix
 ASAAS_API_KEY = os.environ.get('ASAAS_API_KEY', '')
-ASAAS_API_URL = os.environ.get('ASAAS_API_URL', 'https://sandbox.asaas.com/api')
+ASAAS_API_URL = os.environ.get('ASAAS_API_URL', 'https://api.asaas.com/api')
 ASAAS_WEBHOOK_TOKEN = os.environ.get('ASAAS_WEBHOOK_TOKEN', '')
 APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:5000')
 
