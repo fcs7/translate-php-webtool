@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   adminLogin, adminGetUsers, adminGetStats, adminGetActivity,
   adminGetJobHistory, adminToggleAdmin, adminDeleteUser,
+  adminReconcileStorage,
 } from '../services/api'
 import { timeAgo, ACTION_LABELS } from '../utils/formatters'
 
@@ -19,6 +20,8 @@ export default function AdminPanel({ onBack }) {
   const [refreshing, setRefreshing] = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
   const [actionError, setActionError] = useState('')
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileResult, setReconcileResult] = useState(null)
 
   // Auth admin
   useEffect(() => {
@@ -72,6 +75,20 @@ export default function AdminPanel({ onBack }) {
       setActionError(err.message)
     } finally {
       setActionLoading(null)
+    }
+  }
+
+  async function handleReconcile() {
+    setReconciling(true)
+    setReconcileResult(null)
+    try {
+      const result = await adminReconcileStorage(token)
+      setReconcileResult(result)
+      await loadData()
+    } catch (err) {
+      setActionError(err.message)
+    } finally {
+      setReconciling(false)
     }
   }
 
@@ -172,6 +189,38 @@ export default function AdminPanel({ onBack }) {
               </p>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Reconcile Storage (dentro de stats) ──────────── */}
+      {tab === 'stats' && stats && (
+        <div className="space-y-2">
+          <button
+            onClick={handleReconcile}
+            disabled={reconciling}
+            className="w-full glass-light text-xs text-gray-400 hover:text-accent-400 disabled:opacity-50 px-4 py-2.5 rounded-lg transition-all flex items-center justify-center gap-2"
+          >
+            {reconciling ? (
+              <div className="w-3.5 h-3.5 border-2 border-accent-400 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
+              </svg>
+            )}
+            {reconciling ? 'Reconciliando storage...' : 'Reconciliar Storage'}
+          </button>
+          {reconcileResult && (
+            <div className="glass-light border border-green-500/20 rounded-lg px-4 py-2.5 text-xs text-green-400 space-y-1">
+              <p>Reconciliacao concluida: {reconcileResult.users_updated} usuario(s) atualizado(s)</p>
+              {reconcileResult.details && reconcileResult.details.length > 0 && (
+                <ul className="text-gray-500 space-y-0.5">
+                  {reconcileResult.details.map((d, i) => (
+                    <li key={i}>{d.email}: {(d.old_bytes / (1024*1024)).toFixed(1)}MB → {(d.new_bytes / (1024*1024)).toFixed(1)}MB</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
 
