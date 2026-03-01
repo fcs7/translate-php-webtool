@@ -43,6 +43,5 @@ frontend/dist/
 *.backup
 
 # Claude Code project files
-CLAUDE.md
 .claude/
 backend/users.db
