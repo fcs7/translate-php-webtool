@@ -32,7 +32,7 @@ from backend.auth import (
     cleanup_expired_jobs, delete_user_account,
     get_user_quota, check_storage_available,
     get_job_db,
-    get_job_history_entry, get_user_deletable_jobs,
+    get_job_history_entry, get_user_deletable_jobs, delete_job_history_entry,
 )
 from backend.admin_auth import (
     init_admin_db, create_admin_session, validate_admin_session,
@@ -906,10 +906,19 @@ def delete_history_job(job_id):
         return jsonify({'error': 'Job nao encontrado no historico'}), 404
     if entry['user_email'] != session['user_email']:
         return jsonify({'error': 'Acesso negado'}), 403
-    if not entry['file_available']:
-        return jsonify({'error': 'Arquivos ja foram removidos'}), 410
-
     from backend.translator import expire_job_files
+
+    if not entry['file_available']:
+        # Registro orfao de soft-delete antigo — remover do banco
+        delete_job_history_entry(job_id)
+        quota = get_user_quota(session['user_email'])
+        return jsonify({
+            'message': 'Registro removido',
+            'freed_bytes': 0,
+            'freed_mb': 0,
+            'quota': quota,
+        })
+
     freed, _ = expire_job_files(job_id)
     quota = get_user_quota(session['user_email'])
 
@@ -940,8 +949,6 @@ def delete_history_bulk():
     now = _dt.now().isoformat()
 
     for j in jobs:
-        if not j['file_available']:
-            continue
         if expired_only and j['expires_at'] >= now:
             continue
         freed, _ = expire_job_files(j['job_id'])

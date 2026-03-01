@@ -575,7 +575,8 @@ def get_user_job_history(user_email, limit=50):
             "SELECT job_id, status, total_files, total_strings, translated_strings, "
             "created_at, started_at, finished_at, expires_at, file_available, "
             "COALESCE(file_size_bytes, 0) as file_size_bytes "
-            "FROM job_history WHERE user_email = ? ORDER BY created_at DESC LIMIT ?",
+            "FROM job_history WHERE user_email = ? AND file_available = 1 "
+            "ORDER BY created_at DESC LIMIT ?",
             (user_email, limit),
         ).fetchall()
         return [dict(r) for r in rows]
