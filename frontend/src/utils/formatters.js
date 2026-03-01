@@ -43,4 +43,8 @@ export const ACTION_LABELS = {
   delete_history_bulk: 'Limpeza em massa',
   admin_delete_user: 'Deletou usuario',
   admin_reconcile: 'Reconciliou storage',
+  checkout: 'Checkout Pix',
+  plan_activated: 'Plano ativado',
+  plan_expired: 'Plano expirado',
+  plan_refunded: 'Estorno',
 }

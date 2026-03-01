@@ -17,10 +17,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from backend.config import (
     DB_PATH, OTP_EXPIRY_MINUTES, OTP_MAX_ATTEMPTS,
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, log,
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM,
+    PLAN_STORAGE_LIMITS, log,
 )
 
-DEFAULT_STORAGE_LIMIT = 524_288_000  # 500 MB
+DEFAULT_STORAGE_LIMIT = PLAN_STORAGE_LIMITS['free']
 
 
 # ============================================================================
@@ -565,7 +566,7 @@ def save_job_history(job_dict):
                     ),
                 )
     except Exception as e:
-        log.debug(f'[JOB_HISTORY] Erro ao salvar: {e}')
+        log.error(f'[JOB_HISTORY] Erro ao salvar historico: {e}', exc_info=True)
 
 
 def get_user_job_history(user_email, limit=50):
@@ -609,7 +610,7 @@ def get_job_history_entry(job_id):
 
 
 def mark_job_files_expired(job_id):
-    """Marca file_available=0 para um job especifico no historico."""
+    """Marca file_available=0 para um job especifico no historico. Retorna True se sucesso."""
     try:
         with _db_lock:
             with _db_conn() as conn:
@@ -617,18 +618,22 @@ def mark_job_files_expired(job_id):
                     "UPDATE job_history SET file_available = 0 WHERE job_id = ?",
                     (job_id,),
                 )
+        return True
     except Exception as e:
-        log.error(f'[JOB_HISTORY] Erro ao marcar expirado {job_id}: {e}')
+        log.error(f'[JOB_HISTORY] Erro ao marcar expirado {job_id}: {e}', exc_info=True)
+        return False
 
 
 def delete_job_history_entry(job_id):
-    """Remove registro do job_history. Activity log ja serve como auditoria."""
+    """Remove registro do job_history. Retorna True se sucesso."""
     try:
         with _db_lock:
             with _db_conn() as conn:
                 conn.execute("DELETE FROM job_history WHERE job_id = ?", (job_id,))
+        return True
     except Exception as e:
-        log.error(f'[JOB_HISTORY] Erro ao deletar {job_id}: {e}')
+        log.error(f'[JOB_HISTORY] Erro ao deletar {job_id}: {e}', exc_info=True)
+        return False
 
 
 def get_user_deletable_jobs(user_email, limit=10):
@@ -651,28 +656,42 @@ def get_user_deletable_jobs(user_email, limit=10):
         return result
 
 
+def get_user_available_job_ids(user_email):
+    """Retorna job_ids com file_available=1 para um usuario."""
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT job_id FROM job_history WHERE user_email = ? AND file_available = 1",
+            (user_email,),
+        ).fetchall()
+        return [r['job_id'] for r in rows]
+
+
+def set_storage_used(user_email, total_bytes):
+    """Define valor absoluto de storage_used_bytes para um usuario."""
+    with _db_lock:
+        with _db_conn() as conn:
+            conn.execute(
+                "UPDATE users SET storage_used_bytes = ? WHERE email = ?",
+                (max(0, total_bytes), user_email),
+            )
+
+
 def cleanup_expired_jobs():
-    """Remove registros expirados do job_history e retorna job_ids para limpeza de arquivos."""
+    """Retorna job_ids expirados para limpeza de arquivos (sem deletar registros).
+    expire_job_files() cuida da delecao dos registros individualmente.
+    """
     now = datetime.now().isoformat()
-    try:
-        with _db_lock:
-            with _db_conn() as conn:
-                rows = conn.execute(
-                    "SELECT job_id FROM job_history "
-                    "WHERE file_available = 1 AND expires_at < ?",
-                    (now,),
-                ).fetchall()
-                expired_ids = [r['job_id'] for r in rows]
-                if expired_ids:
-                    conn.execute(
-                        "DELETE FROM job_history WHERE file_available = 1 AND expires_at < ?",
-                        (now,),
-                    )
-                    log.info(f'[JOB_HISTORY] {len(expired_ids)} jobs expirados removidos')
-                return expired_ids
-    except Exception as e:
-        log.error(f'[JOB_HISTORY] Erro ao limpar expirados: {e}')
-        return []
+    with _db_lock:
+        with _db_conn() as conn:
+            rows = conn.execute(
+                "SELECT job_id FROM job_history "
+                "WHERE file_available = 1 AND expires_at < ?",
+                (now,),
+            ).fetchall()
+            expired_ids = [r['job_id'] for r in rows]
+            if expired_ids:
+                log.info(f'[JOB_HISTORY] {len(expired_ids)} jobs expirados encontrados para limpeza')
+            return expired_ids
 
 
 def delete_user_account(user_id):

@@ -49,6 +49,24 @@ SMTP_USER = os.environ.get('SMTP_USER', '')
 SMTP_PASS = os.environ.get('SMTP_PASS', '')
 SMTP_FROM = os.environ.get('SMTP_FROM', 'Traducao <noreply@example.com>')
 
+# Asaas — pagamentos Pix
+ASAAS_API_KEY = os.environ.get('ASAAS_API_KEY', '')
+ASAAS_API_URL = os.environ.get('ASAAS_API_URL', 'https://sandbox.asaas.com/api')
+ASAAS_WEBHOOK_TOKEN = os.environ.get('ASAAS_WEBHOOK_TOKEN', '')
+APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://localhost:5000')
+
+# Planos de assinatura (pagamento avulso 30 dias)
+PLAN_STORAGE_LIMITS = {
+    'free': 524_288_000,       # 500 MB
+    'pro': 2_147_483_648,      # 2 GB
+    'business': 10_737_418_240, # 10 GB
+}
+PLAN_PRICES = {
+    'pro': 29.00,
+    'business': 79.00,
+}
+PLAN_DURATION_DAYS = 30
+
 # Garantir que diretorios existem
 for _folder in [UPLOAD_FOLDER, JOBS_FOLDER]:
     os.makedirs(_folder, exist_ok=True)

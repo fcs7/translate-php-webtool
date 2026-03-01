@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, send_file, session
 from flask_cors import CORS
@@ -20,7 +20,7 @@ from backend.config import (
 )
 from backend.translator import (
     start_translation, start_translation_raw, get_job, delete_job, list_jobs,
-    cleanup_old_jobs, count_running_jobs,
+    cleanup_old_jobs, count_running_jobs, expire_job_files,
 )
 from backend.auth import (
     init_db, get_or_create_user, list_all_users, get_system_stats, get_user_by_id,
@@ -40,7 +40,12 @@ from backend.admin_auth import (
     is_admin, set_admin, list_admins, list_active_sessions,
     cleanup_expired_sessions,
 )
-from backend.config import ADMIN_EMAILS
+from backend.billing import (
+    init_billing_db, get_user_plan, create_pix_payment,
+    get_payment_status, check_plan_expiry, get_billing_stats,
+)
+from backend.asaas_webhooks import asaas_bp
+from backend.config import ADMIN_EMAILS, PLAN_STORAGE_LIMITS, PLAN_PRICES, PLAN_DURATION_DAYS
 
 # ============================================================================
 # App
@@ -69,6 +74,10 @@ CORS(app, supports_credentials=True)
 # Inicializar banco de dados
 init_db()
 init_admin_db()
+init_billing_db()
+
+# Registrar blueprints
+app.register_blueprint(asaas_bp)
 
 # Auto-promover admins listados em ADMIN_EMAILS
 for admin_email in ADMIN_EMAILS:
@@ -95,28 +104,57 @@ def _cleanup_loop():
     import time as _time
     _time.sleep(60)  # esperar app estabilizar
     while True:
+        # Limpeza de jobs expirados
         try:
             log.info('[CLEANUP] Iniciando limpeza periodica...')
-            from backend.translator import expire_job_files
             total_freed = 0
             total_jobs = 0
             for expired_id in cleanup_expired_jobs():
-                freed, _ = expire_job_files(expired_id)
-                total_freed += freed
-                total_jobs += 1
-            cleanup_expired_sessions()
+                try:
+                    freed, _ = expire_job_files(expired_id)
+                    total_freed += freed
+                    total_jobs += 1
+                except Exception:
+                    log.error(f'[CLEANUP] Erro ao expirar job {expired_id}', exc_info=True)
             if total_jobs > 0:
                 log.info(f'[CLEANUP] {total_jobs} jobs expirados limpos, '
                          f'{total_freed / (1024*1024):.1f} MB liberados')
             else:
                 log.info('[CLEANUP] Nenhum job expirado encontrado')
-        except Exception as e:
-            log.error(f'[CLEANUP] Erro na limpeza periodica: {e}')
+        except Exception:
+            log.error('[CLEANUP] Erro na limpeza de jobs', exc_info=True)
+
+        # Limpeza de sessoes (independente)
+        try:
+            cleanup_expired_sessions()
+        except Exception:
+            log.error('[CLEANUP] Erro na limpeza de sessoes', exc_info=True)
+
+        # Expirar planos vencidos
+        try:
+            expired_plans = check_plan_expiry()
+            if expired_plans > 0:
+                log.info('[CLEANUP] %d plano(s) expirado(s)', expired_plans)
+        except Exception:
+            log.error('[CLEANUP] Erro na expiracao de planos', exc_info=True)
+
         _time.sleep(_CLEANUP_INTERVAL)
 
 
-_cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True, name='cleanup')
-_cleanup_thread.start()
+# Apenas iniciar cleanup em um worker (evitar duplicacao no Gunicorn)
+_cleanup_started = False
+
+
+def _start_cleanup_if_needed():
+    global _cleanup_started
+    if not _cleanup_started:
+        _cleanup_started = True
+        t = threading.Thread(target=_cleanup_loop, daemon=True, name='cleanup')
+        t.start()
+        log.info('[CLEANUP] Thread de limpeza periodica iniciada')
+
+
+_start_cleanup_if_needed()
 
 # ============================================================================
 # Autenticacao
@@ -361,6 +399,7 @@ def auth_me():
     user = get_or_create_user(email)
     user['is_admin'] = is_admin(email)
     user['quota'] = get_user_quota(email)
+    user['plan'] = get_user_plan(email)
     return jsonify({'user': user}), 200
 
 
@@ -823,7 +862,7 @@ def admin_all_job_history():
 @admin_required
 def admin_reconcile_storage():
     """Recalcula storage_used_bytes de todos os usuarios a partir do disco."""
-    from backend.auth import update_storage_used, _db_conn, _db_lock
+    from backend.auth import get_user_available_job_ids, set_storage_used
     from backend.translator import _get_dir_size
     users = list_all_users()
     users_fixed = 0
@@ -831,32 +870,25 @@ def admin_reconcile_storage():
 
     for user in users:
         email = user['email']
-        real_bytes = 0
-        with _db_conn() as conn:
-            rows = conn.execute(
-                "SELECT job_id FROM job_history WHERE user_email = ? AND file_available = 1",
-                (email,),
-            ).fetchall()
-        for row in rows:
-            job_dir = os.path.join(JOBS_FOLDER, row['job_id'])
-            if os.path.exists(job_dir):
-                real_bytes += _get_dir_size(job_dir)
+        try:
+            real_bytes = 0
+            for jid in get_user_available_job_ids(email):
+                job_dir = os.path.join(JOBS_FOLDER, jid)
+                if os.path.exists(job_dir):
+                    real_bytes += _get_dir_size(job_dir)
 
-        quota = get_user_quota(email)
-        db_bytes = quota['used_bytes']
-        delta = real_bytes - db_bytes
+            quota = get_user_quota(email)
+            db_bytes = quota['used_bytes']
+            delta = real_bytes - db_bytes
 
-        if abs(delta) > 1024:
-            with _db_lock:
-                with _db_conn() as conn:
-                    conn.execute(
-                        "UPDATE users SET storage_used_bytes = ? WHERE email = ?",
-                        (real_bytes, email),
-                    )
-            log.info(f'[RECONCILE] {email}: DB={db_bytes/(1024*1024):.1f}MB, '
-                     f'disk={real_bytes/(1024*1024):.1f}MB, delta={delta/(1024*1024):.1f}MB')
-            users_fixed += 1
-            total_delta += delta
+            if abs(delta) > 1024:
+                set_storage_used(email, real_bytes)
+                log.info(f'[RECONCILE] {email}: DB={db_bytes/(1024*1024):.1f}MB, '
+                         f'disk={real_bytes/(1024*1024):.1f}MB, delta={delta/(1024*1024):.1f}MB')
+                users_fixed += 1
+                total_delta += delta
+        except Exception as e:
+            log.error(f'[RECONCILE] Erro ao reconciliar {email}: {e}', exc_info=True)
 
     log_activity(request.admin_email, 'admin_reconcile',
                  f'{users_fixed} usuarios corrigidos', request.remote_addr)
@@ -866,6 +898,75 @@ def admin_reconcile_storage():
         'total_delta_bytes': total_delta,
         'total_delta_mb': round(total_delta / (1024 * 1024), 1),
     })
+
+
+# ============================================================================
+# Billing — planos e pagamentos Pix
+# ============================================================================
+
+@app.route('/api/billing/plans')
+def billing_plans():
+    """Retorna planos disponiveis com precos (publico)."""
+    plans = []
+    for plan_id, limit_bytes in PLAN_STORAGE_LIMITS.items():
+        plans.append({
+            'id': plan_id,
+            'name': plan_id.capitalize(),
+            'price': PLAN_PRICES.get(plan_id, 0),
+            'storage_mb': round(limit_bytes / (1024 * 1024)),
+            'storage_gb': round(limit_bytes / (1024 * 1024 * 1024), 1),
+            'duration_days': PLAN_DURATION_DAYS if plan_id != 'free' else None,
+        })
+    return jsonify(plans)
+
+
+@app.route('/api/billing/my-plan')
+@login_required
+def billing_my_plan():
+    """Retorna plano atual do usuario com dias restantes."""
+    return jsonify(get_user_plan(session['user_email']))
+
+
+@app.route('/api/billing/checkout', methods=['POST'])
+@login_required
+def billing_checkout():
+    """Cria cobranca Pix e retorna QR Code."""
+    data = request.get_json(silent=True) or {}
+    plan = data.get('plan', '').strip().lower()
+
+    if plan not in PLAN_PRICES:
+        return jsonify({'error': 'Plano invalido. Opcoes: pro, business'}), 400
+
+    try:
+        result = create_pix_payment(session['user_email'], plan)
+        log_activity(session['user_email'], 'checkout',
+                     'Pix %s R$%.2f' % (plan.capitalize(), PLAN_PRICES[plan]),
+                     request.remote_addr)
+        return jsonify(result), 201
+    except RuntimeError as e:
+        log.error('[BILLING] Erro no checkout: %s', e)
+        return jsonify({'error': str(e)}), 502
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/billing/payment/<payment_id>/status')
+@login_required
+def billing_payment_status(payment_id):
+    """Retorna status de um pagamento (somente do usuario logado)."""
+    status = get_payment_status(payment_id)
+    if not status:
+        return jsonify({'error': 'Pagamento nao encontrado'}), 404
+    if status.get('user_email') != session['user_email']:
+        return jsonify({'error': 'Acesso negado'}), 403
+    return jsonify(status)
+
+
+@app.route('/api/admin/billing-stats')
+@admin_required
+def admin_billing_stats():
+    """Estatisticas de billing (admin)."""
+    return jsonify(get_billing_stats())
 
 
 # ============================================================================
@@ -906,7 +1007,6 @@ def delete_history_job(job_id):
         return jsonify({'error': 'Job nao encontrado no historico'}), 404
     if entry['user_email'] != session['user_email']:
         return jsonify({'error': 'Acesso negado'}), 403
-    from backend.translator import expire_job_files
 
     if not entry['file_available']:
         # Registro orfao de soft-delete antigo — remover do banco
@@ -919,7 +1019,9 @@ def delete_history_job(job_id):
             'quota': quota,
         })
 
-    freed, _ = expire_job_files(job_id)
+    freed, email = expire_job_files(job_id)
+    if email is None:
+        return jsonify({'error': 'Nao foi possivel remover o job'}), 500
     quota = get_user_quota(session['user_email'])
 
     log_activity(session['user_email'], 'delete_history',
@@ -940,18 +1042,22 @@ def delete_history_bulk():
     """Deleta arquivos de todos os jobs do usuario (ou so expirados)."""
     expired_only = request.args.get('expired_only', '').lower() in ('true', '1', 'yes')
 
-    from backend.translator import expire_job_files
     jobs = get_user_job_history(session['user_email'], limit=200)
     total_freed = 0
     deleted_count = 0
+    failed_count = 0
 
-    from datetime import datetime as _dt
-    now = _dt.now().isoformat()
+    now = datetime.now().isoformat()
 
     for j in jobs:
         if expired_only and j['expires_at'] >= now:
             continue
-        freed, _ = expire_job_files(j['job_id'])
+        if j.get('status') in ('translating', 'processing', 'queued'):
+            continue
+        freed, email = expire_job_files(j['job_id'])
+        if email is None:
+            failed_count += 1
+            continue
         total_freed += freed
         deleted_count += 1
 
@@ -963,13 +1069,17 @@ def delete_history_bulk():
     log.info(f'{request.remote_addr} bulk delete: {deleted_count} jobs '
              f'({total_freed / (1024*1024):.1f} MB)')
 
-    return jsonify({
+    response = {
         'message': f'{deleted_count} jobs limpos',
         'deleted_count': deleted_count,
         'freed_bytes': total_freed,
         'freed_mb': round(total_freed / (1024 * 1024), 1),
         'quota': quota,
-    })
+    }
+    if failed_count > 0:
+        response['warning'] = f'{failed_count} jobs nao puderam ser removidos'
+
+    return jsonify(response)
 
 
 # ============================================================================
@@ -1036,9 +1146,8 @@ def serve_static(path):
 if __name__ == '__main__':
     cleanup_old_jobs(max_age_hours=168)  # 7 dias
     cleanup_expired_sessions()
-    # Limpar arquivos de jobs expirados (preserva historico)
-    from backend.translator import expire_job_files as _expire
+    # Limpar arquivos de jobs expirados
     for _expired_id in cleanup_expired_jobs():
-        _expire(_expired_id)
+        expire_job_files(_expired_id)
     log.info('Servidor iniciando em http://localhost:5000')
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)

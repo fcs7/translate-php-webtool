@@ -217,10 +217,10 @@ def _get_dir_size(path):
             for fname in filenames:
                 try:
                     total += os.path.getsize(os.path.join(dirpath, fname))
-                except OSError:
-                    pass
-    except OSError:
-        pass
+                except OSError as e:
+                    log.warning(f'[DIR_SIZE] Nao conseguiu ler {os.path.join(dirpath, fname)}: {e}')
+    except OSError as e:
+        log.error(f'[DIR_SIZE] Erro ao percorrer {path}: {e}')
     return total
 
 
@@ -437,8 +437,8 @@ def _run(job, socketio):
                 try:
                     from backend.auth import save_job_history
                     save_job_history(job.to_dict())
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error(f'[{job.job_id}] Erro ao salvar historico de job cancelado: {e}')
                 return
 
         # Finalizar
@@ -578,17 +578,30 @@ def get_job(job_id):
     return _get(job_id)
 
 
-def delete_job(job_id):
-    # Tentar pegar da memória primeiro, senão do DB (para file_size_bytes)
-    job = _pop(job_id)
-    file_size = job.file_size_bytes if job else 0
-    user_email = job.user_email if job else None
+def _resolve_job_owner(job_id, include_history=False):
+    """Busca user_email e file_size_bytes do job (memoria > DB > historico).
+    Retorna (user_email, file_size_bytes) ou (None, 0) se nao encontrou.
+    """
+    job = _get(job_id)
+    if job and job.user_email:
+        return job.user_email, job.file_size_bytes
 
-    if not job:
-        db_job = get_job_db(job_id)
-        if db_job:
-            file_size = db_job.get('file_size_bytes', 0)
-            user_email = db_job.get('user_email')
+    db_job = get_job_db(job_id)
+    if db_job and db_job.get('user_email'):
+        return db_job['user_email'], db_job.get('file_size_bytes', 0)
+
+    if include_history:
+        from backend.auth import get_job_history_entry
+        history = get_job_history_entry(job_id)
+        if history and history.get('user_email'):
+            return history['user_email'], history.get('file_size_bytes', 0)
+
+    return None, 0
+
+
+def delete_job(job_id):
+    user_email, file_size = _resolve_job_owner(job_id)
+    _pop(job_id)  # remover da memoria
 
     job_dir = os.path.join(JOBS_FOLDER, job_id)
     if os.path.exists(job_dir):
@@ -608,31 +621,16 @@ def expire_job_files(job_id):
     """Remove arquivos e registro de historico de um job.
     - Remove pasta jobs/{job_id}/ do disco
     - Atualiza storage_used_bytes do usuario (negativo)
-    - Deleta registro do job_history (activity_log ja serve como auditoria)
+    - Deleta registro do job_history
     - Remove da tabela jobs ativa
     Retorna (freed_bytes, user_email) ou (0, None) se nao encontrou.
     """
-    from backend.auth import get_job_history_entry, delete_job_history_entry
+    from backend.auth import delete_job_history_entry
 
-    # Buscar info do job (memoria > DB jobs > job_history)
-    job = _get(job_id)
-    file_size = job.file_size_bytes if job else 0
-    user_email = job.user_email if job else None
-
-    if not job:
-        db_job = get_job_db(job_id)
-        if db_job:
-            file_size = db_job.get('file_size_bytes', 0)
-            user_email = db_job.get('user_email')
+    user_email, file_size = _resolve_job_owner(job_id, include_history=True)
 
     if not user_email:
-        history = get_job_history_entry(job_id)
-        if history:
-            file_size = history.get('file_size_bytes', 0)
-            user_email = history.get('user_email')
-
-    if not user_email:
-        log.warning(f'[{job_id}] expire_job_files: job nao encontrado')
+        log.warning(f'[{job_id}] expire_job_files: job nao encontrado em nenhuma fonte')
         return 0, None
 
     # Remover arquivos do disco
@@ -640,14 +638,20 @@ def expire_job_files(job_id):
     freed_bytes = 0
     if os.path.exists(job_dir):
         freed_bytes = _get_dir_size(job_dir)
-        shutil.rmtree(job_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(job_dir)
+        except OSError as e:
+            log.error(f'[{job_id}] Falha ao remover diretorio {job_dir}: {e}')
+            if os.path.exists(job_dir):
+                freed_bytes = 0  # nao alegar espaco liberado se falhou
 
-    # Se nao tinha tamanho no DB, usar tamanho real do disco
-    if freed_bytes == 0:
+    # Se nao tinha tamanho no disco, usar tamanho do DB
+    if freed_bytes == 0 and file_size > 0:
         freed_bytes = file_size
 
-    # Remover registro do historico (activity_log ja serve como auditoria)
-    delete_job_history_entry(job_id)
+    # Remover registro do historico
+    if not delete_job_history_entry(job_id):
+        log.error(f'[{job_id}] Falha ao deletar historico — registro orfao pode persistir')
 
     # Remover da tabela jobs ativa (se existir)
     delete_job_db(job_id)

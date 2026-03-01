@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   adminLogin, adminGetUsers, adminGetStats, adminGetActivity,
   adminGetJobHistory, adminToggleAdmin, adminDeleteUser,
-  adminReconcileStorage,
+  adminReconcileStorage, adminGetBillingStats,
 } from '../services/api'
 import { timeAgo, ACTION_LABELS } from '../utils/formatters'
 
@@ -22,6 +22,7 @@ export default function AdminPanel({ onBack }) {
   const [actionError, setActionError] = useState('')
   const [reconciling, setReconciling] = useState(false)
   const [reconcileResult, setReconcileResult] = useState(null)
+  const [billingStats, setBillingStats] = useState(null)
 
   // Auth admin
   useEffect(() => {
@@ -36,10 +37,18 @@ export default function AdminPanel({ onBack }) {
     if (!token) return
     setRefreshing(true)
 
-    try { setStats(await adminGetStats(token)) } catch (e) { console.error('[Admin] stats:', e.message) }
-    try { setUsers(await adminGetUsers(token)) } catch (e) { console.error('[Admin] users:', e.message) }
-    try { setActivity(await adminGetActivity(token)) } catch (e) { console.error('[Admin] activity:', e.message) }
-    try { setJobHistory(await adminGetJobHistory(token)) } catch (e) { console.error('[Admin] jobs:', e.message) }
+    const [statsRes, usersRes, activityRes, jobsRes, billingRes] = await Promise.allSettled([
+      adminGetStats(token),
+      adminGetUsers(token),
+      adminGetActivity(token),
+      adminGetJobHistory(token),
+      adminGetBillingStats(token),
+    ])
+    if (statsRes.status === 'fulfilled') setStats(statsRes.value)
+    if (usersRes.status === 'fulfilled') setUsers(usersRes.value)
+    if (activityRes.status === 'fulfilled') setActivity(activityRes.value)
+    if (jobsRes.status === 'fulfilled') setJobHistory(jobsRes.value)
+    if (billingRes.status === 'fulfilled') setBillingStats(billingRes.value)
 
     setRefreshing(false)
   }, [token])
@@ -116,6 +125,7 @@ export default function AdminPanel({ onBack }) {
   const tabs = [
     { id: 'stats', label: 'Painel' },
     { id: 'users', label: users.length > 0 ? `Usuarios (${users.length})` : 'Usuarios' },
+    { id: 'billing', label: 'Billing' },
     { id: 'activity', label: 'Atividade' },
     { id: 'jobs', label: 'Jobs' },
   ]
@@ -211,15 +221,91 @@ export default function AdminPanel({ onBack }) {
           </button>
           {reconcileResult && (
             <div className="glass-light border border-green-500/20 rounded-lg px-4 py-2.5 text-xs text-green-400 space-y-1">
-              <p>Reconciliacao concluida: {reconcileResult.users_updated} usuario(s) atualizado(s)</p>
-              {reconcileResult.details && reconcileResult.details.length > 0 && (
-                <ul className="text-gray-500 space-y-0.5">
-                  {reconcileResult.details.map((d, i) => (
-                    <li key={i}>{d.email}: {(d.old_bytes / (1024*1024)).toFixed(1)}MB → {(d.new_bytes / (1024*1024)).toFixed(1)}MB</li>
-                  ))}
-                </ul>
-              )}
+              <p>
+                Reconciliacao concluida: {reconcileResult.users_fixed} usuario(s) corrigido(s)
+                {reconcileResult.total_delta_mb !== 0 && (
+                  <span className="ml-1">(delta: {reconcileResult.total_delta_mb > 0 ? '+' : ''}{reconcileResult.total_delta_mb} MB)</span>
+                )}
+              </p>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Billing ──────────────────────────────────────── */}
+      {tab === 'billing' && billingStats && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="glass-light rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-1">Receita total</p>
+              <p className="text-xl font-bold font-mono text-green-400">
+                R${billingStats.total_revenue?.toFixed(2)}
+              </p>
+            </div>
+            <div className="glass-light rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-1">Receita mensal</p>
+              <p className="text-xl font-bold font-mono text-green-400">
+                R${billingStats.monthly_revenue?.toFixed(2)}
+              </p>
+            </div>
+          </div>
+
+          {/* Distribuicao por plano */}
+          <div className="glass-light rounded-lg p-3 space-y-2">
+            <p className="text-xs text-gray-500">Usuarios por plano</p>
+            <div className="flex gap-3">
+              {Object.entries(billingStats.plan_counts || {}).map(([plan, count]) => (
+                <div key={plan} className="flex items-center gap-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    plan === 'pro' ? 'bg-accent-500/20 text-accent-400' :
+                    plan === 'business' ? 'bg-purple-500/20 text-purple-400' :
+                    'bg-gray-500/20 text-gray-400'
+                  }`}>
+                    {plan.charAt(0).toUpperCase() + plan.slice(1)}
+                  </span>
+                  <span className="text-sm font-mono text-gray-300">{count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Pagamentos recentes */}
+          <div className="space-y-1.5">
+            <p className="text-xs text-gray-500">Pagamentos recentes</p>
+            {(billingStats.recent_payments || []).length === 0 ? (
+              <p className="text-gray-600 text-xs text-center py-4">Nenhum pagamento.</p>
+            ) : (billingStats.recent_payments || []).map((p, i) => (
+              <div key={i} className="glass-light rounded-lg px-3 py-2 flex items-center gap-3 text-xs">
+                <span className={`px-1.5 py-0.5 rounded ${
+                  p.status === 'RECEIVED' ? 'bg-green-500/10 text-green-400' :
+                  p.status === 'PENDING' ? 'bg-yellow-500/10 text-yellow-400' :
+                  p.status === 'REFUNDED' ? 'bg-red-500/10 text-red-400' :
+                  'bg-gray-500/10 text-gray-400'
+                }`}>
+                  {p.status}
+                </span>
+                <span className="text-accent-400 truncate">{p.user_email}</span>
+                <span className={`px-1.5 py-0.5 rounded ${
+                  p.plan === 'pro' ? 'bg-accent-500/10 text-accent-400' : 'bg-purple-500/10 text-purple-400'
+                }`}>
+                  {p.plan}
+                </span>
+                <span className="text-gray-300 font-mono ml-auto">R${p.value?.toFixed(2)}</span>
+                <span className="text-gray-600 shrink-0">{timeAgo(p.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {tab === 'billing' && !billingStats && (
+        <div className="text-center py-8">
+          {refreshing ? (
+            <>
+              <div className="inline-block w-5 h-5 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-gray-500 text-sm mt-3">Carregando billing...</p>
+            </>
+          ) : (
+            <p className="text-gray-500 text-sm">Nenhum dado disponivel.</p>
           )}
         </div>
       )}

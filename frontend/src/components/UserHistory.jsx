@@ -35,12 +35,17 @@ export default function UserHistory({ onBack }) {
   const [deleting, setDeleting] = useState(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [confirmBulk, setConfirmBulk] = useState(false)
+  const [error, setError] = useState(null)
 
   const loadData = useCallback(() => {
     setLoading(true)
+    setError(null)
     Promise.all([getHistory(), getActivity(), getQuota()])
       .then(([j, a, q]) => { setJobs(j); setActivity(a); setQuota(q) })
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Erro ao carregar dados:', err)
+        setError('Erro ao carregar dados. Tente recarregar a pagina.')
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -49,12 +54,14 @@ export default function UserHistory({ onBack }) {
   const handleDeleteJob = async (jobId) => {
     if (deleting) return
     setDeleting(jobId)
+    setError(null)
     try {
       const result = await deleteHistoryJob(jobId)
       setQuota(result.quota)
       setJobs(prev => prev.filter(j => j.job_id !== jobId))
-    } catch {
-      // silencioso
+    } catch (err) {
+      console.error('Erro ao deletar job:', err)
+      setError(`Erro ao remover traducao: ${err.message}`)
     } finally {
       setDeleting(null)
     }
@@ -63,12 +70,14 @@ export default function UserHistory({ onBack }) {
   const handleBulkDelete = async (expiredOnly) => {
     setBulkDeleting(true)
     setConfirmBulk(false)
+    setError(null)
     try {
       const result = await deleteHistoryBulk(expiredOnly)
       setQuota(result.quota)
       loadData()
-    } catch {
-      // silencioso
+    } catch (err) {
+      console.error('Erro ao deletar em massa:', err)
+      setError(`Erro ao liberar espaco: ${err.message}`)
     } finally {
       setBulkDeleting(false)
     }
@@ -102,6 +111,14 @@ export default function UserHistory({ onBack }) {
 
       {/* Quota Bar */}
       <QuotaBar quota={quota} />
+
+      {/* Error Banner */}
+      {error && (
+        <div className="glass-light border border-red-500/20 rounded-lg px-4 py-2.5 text-xs text-red-400 flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-gray-500 hover:text-gray-300 ml-2">&times;</button>
+        </div>
+      )}
 
       {/* Botao liberar espaco */}
       {quota && quota.percent >= 80 && jobs.length > 0 && (

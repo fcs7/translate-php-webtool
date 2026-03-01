@@ -143,6 +143,43 @@ else
 fi
 echo ""
 
+# ── Asaas API (pagamentos Pix) ────────────────────────────────────────────
+SKIP_ASAAS=0
+ASAAS_KEY_VAL=""
+ASAAS_URL_VAL="https://api.asaas.com/api"
+ASAAS_WEBHOOK_VAL=""
+APP_BASE_URL_VAL=""
+if grep -q "^ASAAS_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+    ASAAS_KEY_VAL=$(grep "^ASAAS_API_KEY=" "$ENV_FILE" | cut -d= -f2 || true)
+    ASAAS_URL_VAL=$(grep "^ASAAS_API_URL=" "$ENV_FILE" | cut -d= -f2 || echo "https://api.asaas.com/api")
+    ASAAS_WEBHOOK_VAL=$(grep "^ASAAS_WEBHOOK_TOKEN=" "$ENV_FILE" | cut -d= -f2 || true)
+    APP_BASE_URL_VAL=$(grep "^APP_BASE_URL=" "$ENV_FILE" | cut -d= -f2 || true)
+    SKIP_ASAAS=1
+    skip "Asaas API ja configurada"
+else
+    echo -e "${BLUE}Pagamentos Pix — Asaas (opcional)${NC}"
+    echo "  Cadastro em: https://www.asaas.com/"
+    read -r -p "  Asaas API Key (Enter para pular): " ASAAS_KEY_VAL
+    ASAAS_KEY_VAL="${ASAAS_KEY_VAL// /}"
+    if [ -n "$ASAAS_KEY_VAL" ]; then
+        read -r -p "  URL da API [https://api.asaas.com/api]: " _asaas_url
+        ASAAS_URL_VAL="${_asaas_url:-$ASAAS_URL_VAL}"
+        ASAAS_WEBHOOK_VAL=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+        if [ -n "$DOMAIN_VAL" ]; then
+            APP_BASE_URL_VAL="https://$DOMAIN_VAL"
+        else
+            APP_BASE_URL_VAL="http://$IP"
+        fi
+        ok "Asaas configurado — Webhook token gerado automaticamente"
+        echo "  Webhook URL: $APP_BASE_URL_VAL/api/webhooks/asaas"
+        echo "  Webhook Token: $ASAAS_WEBHOOK_VAL"
+        echo "  Configure este token no painel Asaas > Integracoes > Webhooks"
+    else
+        warn "Sem Asaas — pagamentos Pix nao estarao disponiveis"
+    fi
+fi
+echo ""
+
 if [ "$SKIP_SMTP" -eq 0 ]; then
     echo -e "${BLUE}Configuracao de e-mail (OTP)${NC}"
     echo "  Para Gmail: use uma App Password (myaccount.google.com/apppasswords)"
@@ -391,12 +428,30 @@ SMTP_PASS=$SMTP_PASS_VAL
 SMTP_FROM=$SMTP_FROM_VAL
 
 DEEPL_API_KEY=$DEEPL_KEY_VAL
+
+# Asaas (pagamentos Pix)
+ASAAS_API_KEY=$ASAAS_KEY_VAL
+ASAAS_API_URL=$ASAAS_URL_VAL
+ASAAS_WEBHOOK_TOKEN=$ASAAS_WEBHOOK_VAL
+APP_BASE_URL=$APP_BASE_URL_VAL
 EOF
     chmod 600 "$ENV_FILE"
     chown root:root "$ENV_FILE"
     ok "Configuracao salva em $ENV_FILE"
 else
     skip "env file existente"
+    # Adicionar vars Asaas ao env existente (se novas)
+    if [ "$SKIP_ASAAS" -eq 0 ] && [ -n "$ASAAS_KEY_VAL" ]; then
+        {
+            echo ""
+            echo "# Asaas (pagamentos Pix) — adicionado em $(date)"
+            echo "ASAAS_API_KEY=$ASAAS_KEY_VAL"
+            echo "ASAAS_API_URL=$ASAAS_URL_VAL"
+            echo "ASAAS_WEBHOOK_TOKEN=$ASAAS_WEBHOOK_VAL"
+            echo "APP_BASE_URL=$APP_BASE_URL_VAL"
+        } >> "$ENV_FILE"
+        ok "Variaveis Asaas adicionadas ao env existente"
+    fi
 fi
 
 cat > "/etc/systemd/system/$APP_NAME.service" << UNIT

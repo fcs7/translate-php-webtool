@@ -267,6 +267,49 @@ export async function adminReconcileStorage(token) {
   return data
 }
 
+// ─── Billing ─────────────────────────────────────────────────────────────────
+
+export async function getBillingPlans() {
+  const res = await fetch(`${API_BASE}/billing/plans`, { credentials: 'include' })
+  if (!res.ok) throw new Error('Erro ao carregar planos')
+  return res.json()
+}
+
+export async function getMyPlan() {
+  const res = await fetch(`${API_BASE}/billing/my-plan`, { credentials: 'include' })
+  if (!res.ok) throw new Error('Erro ao carregar plano')
+  return res.json()
+}
+
+export async function createPixCheckout(plan) {
+  const res = await fetch(`${API_BASE}/billing/checkout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ plan }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Erro ao criar cobranca')
+  return data
+}
+
+export async function getPaymentStatus(paymentId) {
+  const res = await fetch(`${API_BASE}/billing/payment/${paymentId}/status`, {
+    credentials: 'include',
+  })
+  if (!res.ok) throw new Error('Erro ao consultar pagamento')
+  return res.json()
+}
+
+export async function adminGetBillingStats(token) {
+  const res = await fetch(`${API_BASE}/admin/billing-stats`, {
+    credentials: 'include',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error('Erro ao carregar billing stats')
+  return res.json()
+}
+
 // ─── Cache ───────────────────────────────────────────────────────────────────
 
 export async function clearUntranslatedCache() {
