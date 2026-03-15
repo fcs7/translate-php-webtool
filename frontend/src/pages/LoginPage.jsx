@@ -2,13 +2,14 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { login, register, requestOtp, verifyOtp } from '../services/api'
 
 export default function LoginPage({ onSuccess }) {
-  // 'login' | 'register' | 'otp-request' | 'otp-verify'
+  // 'login' | 'otp-request' | 'otp-verify'
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showCreatePrompt, setShowCreatePrompt] = useState(false)
 
   // OTP state
   const [digits, setDigits] = useState(['', '', '', '', '', ''])
@@ -16,7 +17,6 @@ export default function LoginPage({ onSuccess }) {
   const digitRefs = useRef([])
   const countdownRef = useRef(null)
   const emailRef = useRef(null)
-  const passwordRef = useRef(null)
 
   useEffect(() => {
     emailRef.current?.focus()
@@ -47,6 +47,7 @@ export default function LoginPage({ onSuccess }) {
 
   async function handleLogin(e) {
     e.preventDefault()
+    if (showCreatePrompt) return
     setError('')
 
     if (!isValidEmail(email)) {
@@ -63,22 +64,21 @@ export default function LoginPage({ onSuccess }) {
       const data = await login(email, password)
       onSuccess(data.user)
     } catch (err) {
-      setError(err.message)
+      if (err.code === 'user_not_found') {
+        setShowCreatePrompt(true)
+      } else {
+        setError(err.message)
+      }
     } finally {
       setLoading(false)
     }
   }
 
-  // ─── Cadastro ───────────────────────────────────────────────────────────────
+  // ─── Auto-cadastro (confirmacao) ────────────────────────────────────────────
 
-  async function handleRegister(e) {
-    e.preventDefault()
+  async function handleConfirmRegister() {
     setError('')
 
-    if (!isValidEmail(email)) {
-      setError('Digite um e-mail valido.')
-      return
-    }
     if (password.length < 6) {
       setError('Senha deve ter pelo menos 6 caracteres.')
       return
@@ -198,6 +198,7 @@ export default function LoginPage({ onSuccess }) {
     setMode(newMode)
     setError('')
     setPassword('')
+    setShowCreatePrompt(false)
     setDigits(['', '', '', '', '', ''])
   }
 
@@ -233,7 +234,7 @@ export default function LoginPage({ onSuccess }) {
         ref={emailRef}
         type="email"
         value={email}
-        onChange={e => { setEmail(e.target.value); setError('') }}
+        onChange={e => { setEmail(e.target.value); setError(''); setShowCreatePrompt(false) }}
         placeholder="Digite seu e-mail"
         autoComplete="email"
         className="input-glow w-full bg-surface-800/60 border border-white/10 rounded-lg px-4 py-2.5
@@ -244,7 +245,7 @@ export default function LoginPage({ onSuccess }) {
     </div>
   )
 
-  const PasswordInput = (autoFocus = false) => (
+  const PasswordInput = () => (
     <div className="space-y-2">
       <label className="text-sm text-gray-400 flex items-center gap-2">
         <svg className="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -255,12 +256,11 @@ export default function LoginPage({ onSuccess }) {
       </label>
       <div className="relative">
         <input
-          ref={autoFocus ? passwordRef : undefined}
           type={showPassword ? 'text' : 'password'}
           value={password}
           onChange={e => { setPassword(e.target.value); setError('') }}
-          placeholder={mode === 'register' ? 'Minimo 6 caracteres' : 'Digite sua senha'}
-          autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+          placeholder="Digite sua senha"
+          autoComplete="current-password"
           className="input-glow w-full bg-surface-800/60 border border-white/10 rounded-lg px-4 py-2.5 pr-10
                      text-white placeholder-gray-600 text-sm outline-none
                      focus:border-accent-500 focus:ring-1 focus:ring-accent-500/30
@@ -317,107 +317,91 @@ export default function LoginPage({ onSuccess }) {
       {/* Card */}
       <div className="w-full max-w-sm glass rounded-2xl shadow-2xl overflow-hidden fade-in relative z-10">
 
-        {/* ── Login com Senha ─────────────────────────────────────── */}
+        {/* ── Login (com auto-cadastro) ─────────────────────────── */}
         {mode === 'login' && (
           <form onSubmit={handleLogin} className="p-8 space-y-5">
             <div>
               <h1 className="text-xl font-semibold text-gradient">Entrar</h1>
-              <p className="text-sm text-gray-500 mt-1">Acesse sua conta</p>
+              <p className="text-sm text-gray-500 mt-1">Acesse ou crie sua conta</p>
             </div>
 
             {EmailInput()}
             {PasswordInput()}
             {ErrorBox()}
 
-            <button
-              type="submit"
-              disabled={loading || !email || !password}
-              className="btn-glow w-full py-2.5 rounded-lg font-medium text-sm transition-all
-                         text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">{Spinner()} Entrando...</span>
-              ) : (
-                <span className="flex items-center justify-center gap-2">
-                  Entrar
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
+            {/* Prompt de criacao de conta */}
+            {showCreatePrompt && (
+              <div className="space-y-3">
+                <div className="glass-light border border-accent-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                  <svg className="w-4 h-4 text-accent-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
-                </span>
-              )}
-            </button>
+                  <p className="text-accent-300 text-sm">Nenhuma conta encontrada com este e-mail. Deseja criar uma conta?</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmRegister}
+                    disabled={loading}
+                    className="btn-glow flex-1 py-2.5 rounded-lg font-medium text-sm transition-all
+                               text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {loading ? (
+                      <span className="flex items-center justify-center gap-2">{Spinner()} Criando...</span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                          <circle cx="8.5" cy="7" r="4" />
+                          <line x1="20" y1="8" x2="20" y2="14" />
+                          <line x1="23" y1="11" x2="17" y2="11" />
+                        </svg>
+                        Criar conta e entrar
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreatePrompt(false)}
+                    className="px-4 py-2.5 rounded-lg text-sm text-gray-400 hover:text-white
+                               border border-white/10 hover:border-white/20 transition-all"
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            )}
 
-            <div className="flex items-center justify-between pt-1">
+            {!showCreatePrompt && (
+              <button
+                type="submit"
+                disabled={loading || !email || !password}
+                className="btn-glow w-full py-2.5 rounded-lg font-medium text-sm transition-all
+                           text-white disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">{Spinner()} Entrando...</span>
+                ) : (
+                  <span className="flex items-center justify-center gap-2">
+                    Entrar
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                      <polyline points="12 5 19 12 12 19" />
+                    </svg>
+                  </span>
+                )}
+              </button>
+            )}
+
+            <div className="text-center pt-1">
               <button
                 type="button"
                 onClick={() => switchMode('otp-request')}
                 className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
               >
                 Esqueci a senha
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode('register')}
-                className="text-sm text-gray-500 hover:text-accent-400 transition-colors"
-              >
-                <span className="text-accent-400 font-medium">Cadastre-se</span>
-              </button>
-            </div>
-          </form>
-        )}
-
-        {/* ── Cadastro ────────────────────────────────────────────── */}
-        {mode === 'register' && (
-          <form onSubmit={handleRegister} className="p-8 space-y-5">
-            <div>
-              <button
-                type="button"
-                onClick={() => switchMode('login')}
-                className="text-gray-500 hover:text-gray-300 text-sm mb-4 flex items-center gap-1.5 transition-colors"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="19" y1="12" x2="5" y2="12" />
-                  <polyline points="12 19 5 12 12 5" />
-                </svg>
-                Voltar
-              </button>
-              <h1 className="text-xl font-semibold text-gradient">Criar conta</h1>
-              <p className="text-sm text-gray-500 mt-1">Cadastre-se para comecar</p>
-            </div>
-
-            {EmailInput()}
-            {PasswordInput()}
-            {ErrorBox()}
-
-            <button
-              type="submit"
-              disabled={loading || !email || password.length < 6}
-              className="btn-glow w-full py-2.5 rounded-lg font-medium text-sm transition-all
-                         text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">{Spinner()} Cadastrando...</span>
-              ) : (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                    <circle cx="8.5" cy="7" r="4" />
-                    <line x1="20" y1="8" x2="20" y2="14" />
-                    <line x1="23" y1="11" x2="17" y2="11" />
-                  </svg>
-                  Cadastrar
-                </span>
-              )}
-            </button>
-
-            <div className="text-center pt-1">
-              <button
-                type="button"
-                onClick={() => switchMode('login')}
-                className="text-sm text-gray-500 hover:text-accent-400 transition-colors"
-              >
-                Ja tem conta? <span className="text-accent-400 font-medium">Entrar</span>
               </button>
             </div>
           </form>

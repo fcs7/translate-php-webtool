@@ -270,18 +270,18 @@ def login_user(email, password):
         ).fetchone()
 
     if not row:
-        # Gastar tempo com hash para evitar timing attack (user enumeration)
+        # Gastar tempo com hash para evitar timing attack
         check_password_hash(
             'scrypt:32768:8:1$dummy$0000000000000000000000000000000000000000000000000000000000000000',
             password,
         )
-        return None, 'E-mail ou senha incorretos.'
+        return None, 'user_not_found'
 
     if not row['password_hash']:
-        return None, 'Conta sem senha. Use o codigo por e-mail ou cadastre uma senha.'
+        return None, 'no_password'
 
     if not check_password_hash(row['password_hash'], password):
-        return None, 'E-mail ou senha incorretos.'
+        return None, 'wrong_password'
 
     user = {'id': row['id'], 'email': row['email'], 'created_at': row['created_at']}
     log.info(f'[AUTH] Login com senha: {email}')

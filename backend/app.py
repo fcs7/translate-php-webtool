@@ -269,7 +269,11 @@ def auth_login():
 
     user, error = login_user(email, password)
     if error:
-        return jsonify({'error': error}), 401
+        if error == 'user_not_found':
+            return jsonify({'error': 'Conta nao encontrada.', 'code': 'user_not_found'}), 401
+        if error == 'no_password':
+            return jsonify({'error': 'Conta sem senha. Use o codigo por e-mail ou cadastre uma senha.', 'code': 'no_password'}), 401
+        return jsonify({'error': 'Senha incorreta.'}), 401
 
     user['is_admin'] = is_admin(email)
     session['user_email'] = email

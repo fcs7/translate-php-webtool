@@ -22,7 +22,11 @@ export async function login(email, password) {
     body: JSON.stringify({ email, password }),
   })
   const data = await res.json()
-  if (!res.ok) throw new Error(data.error || 'E-mail ou senha incorretos')
+  if (!res.ok) {
+    const err = new Error(data.error || 'E-mail ou senha incorretos')
+    err.code = data.code
+    throw err
+  }
   return data
 }
 
