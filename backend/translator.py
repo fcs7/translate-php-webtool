@@ -229,14 +229,14 @@ def _get_dir_size(path):
 # ============================================================================
 
 def _count_strings(file_path):
-    """Conta $msg_arr em um arquivo PHP."""
+    """Conta strings localizaveis em um arquivo PHP."""
     count = 0
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 s = line.rstrip('\n')
-                if trans_engine.SINGLE_QUOTE_RE.match(s) or \
-                   trans_engine.DOUBLE_QUOTE_RE.match(s):
+                m, _ = trans_engine.match_translatable_line(s)
+                if m:
                     count += 1
     except Exception:
         pass
@@ -291,11 +291,7 @@ def _translate_file(src_path, dst_path, delay, job, socketio=None):
         line = src_lines[i]
         stripped = line.rstrip('\n')
 
-        m = trans_engine.SINGLE_QUOTE_RE.match(stripped)
-        qc = "'"
-        if not m:
-            m = trans_engine.DOUBLE_QUOTE_RE.match(stripped)
-            qc = '"'
+        m, qc = trans_engine.match_translatable_line(stripped)
 
         if m:
             prefix, raw_value, suffix = m.group(1), m.group(2), m.group(3)

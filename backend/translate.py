@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script de tradução EN → PT-BR para arquivos PHP de localização.
-Usa translate-shell (trans) para traduzir os valores de $msg_arr.
+Suporta qualquer formato: $var['key']='value', 'key'=>'value', atribuições encadeadas.
 Suporta resume: se interrompido, continua de onde parou.
 
 Uso:
@@ -27,13 +27,56 @@ TARGET_LANG = 'pt-br'
 DEFAULT_DELAY = 0.2  # Reduzido de 0.5s para 0.2s (otimização)
 
 # === Regex ===
+# Padrão genérico para variável PHP com subscript(s): $var['key'], $_LANG['k1']['k2']
+VAR_PATTERN = r'\$[a-zA-Z_]\w*(?:\[.*?\])+'
+
+# Atribuição simples: $var['key'] = 'value';
 SINGLE_QUOTE_RE = re.compile(
-    r"^(\s*\$msg_arr\[.*?\]\s*=\s*')((?:[^'\\]|\\.)*)(';\s*;?\s*)$"
+    rf"^(\s*{VAR_PATTERN}\s*=\s*')((?:[^'\\]|\\.)*)('[\s,;]*\s*)$"
 )
 DOUBLE_QUOTE_RE = re.compile(
-    r'^(\s*\$msg_arr\[.*?\]\s*=\s*")((?:[^"\\]|\\.)*)(";?\s*;?\s*)$'
+    rf'^(\s*{VAR_PATTERN}\s*=\s*")((?:[^"\\]|\\.)*)(";?[\s,;]*\s*)$'
 )
-PLACEHOLDER_RE = re.compile(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}')
+
+# Atribuição encadeada: $var['a'] = $var['b'] = 'value';
+CHAINED_SINGLE_RE = re.compile(
+    rf"^(\s*(?:{VAR_PATTERN}\s*=\s*)+')((?:[^'\\]|\\.)*)('[\s,;]*\s*)$"
+)
+CHAINED_DOUBLE_RE = re.compile(
+    rf'^(\s*(?:{VAR_PATTERN}\s*=\s*)+")((?:[^"\\]|\\.)*)(";?[\s,;]*\s*)$'
+)
+
+# Sintaxe de array associativo: 'key' => 'value',
+ARROW_SINGLE_RE = re.compile(
+    r"^(\s*'(?:[^'\\]|\\.)*'\s*=>\s*')((?:[^'\\]|\\.)*)('[\s,;)]*\s*)$"
+)
+ARROW_DOUBLE_RE = re.compile(
+    r'^(\s*"(?:[^"\\]|\\.)*"\s*=>\s*")((?:[^"\\]|\\.)*)(";?[\s,;)]*\s*)$'
+)
+
+# Placeholders: {name} e :name (protegidos durante tradução)
+PLACEHOLDER_RE = re.compile(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}|(?<![:/\w]):[a-zA-Z_][a-zA-Z0-9_]*\b')
+
+# Registry: CHAINED_*_RE já cobrem atribuições simples (+ = 1 ou mais),
+# então SINGLE/DOUBLE_QUOTE_RE não precisam estar aqui.
+_PATTERNS = [
+    (CHAINED_SINGLE_RE, "'"),
+    (CHAINED_DOUBLE_RE, '"'),
+    (ARROW_SINGLE_RE, "'"),
+    (ARROW_DOUBLE_RE, '"'),
+]
+
+
+def match_translatable_line(line):
+    """Tenta fazer match de uma linha PHP contra todos os padrões conhecidos.
+    Retorna (match_object, quote_char) ou (None, '') se nenhum padrão faz match.
+    Todos os padrões usam 3 grupos: (prefix, value, suffix).
+    """
+    for pattern, qc in _PATTERNS:
+        m = pattern.match(line)
+        if m:
+            return m, qc
+    return None, ''
 
 
 # =============================================================================
@@ -68,8 +111,8 @@ def find_lang_dirs(root_path, max_depth=5):
         if not php_files:
             continue
 
-        # Verificar se algum arquivo contém $msg_arr
-        msg_arr_count = 0
+        # Verificar se algum arquivo contém strings PHP localizáveis
+        php_str_count = 0
         sample_files = []
 
         for php_file in php_files[:10]:  # Checar até 10 arquivos
@@ -77,17 +120,17 @@ def find_lang_dirs(root_path, max_depth=5):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read(5000)  # Ler primeiros 5KB
-                    matches = content.count('$msg_arr')
+                    matches = len(re.findall(r"\$[a-zA-Z_]\w*\[.*?\]\s*=\s*['\"]|'[^']*'\s*=>\s*['\"]", content))
                     if matches > 0:
-                        msg_arr_count += matches
+                        php_str_count += matches
                         sample_files.append(php_file)
             except Exception:
                 continue
 
-        if msg_arr_count >= 5:  # Mínimo de 5 ocorrências de $msg_arr
+        if php_str_count >= 5:  # Mínimo de 5 strings PHP localizáveis
             candidates.append({
                 'path': dirpath,
-                'msg_count': msg_arr_count,
+                'msg_count': php_str_count,
                 'php_files': len(php_files),
                 'samples': sample_files[:3]
             })
@@ -355,7 +398,7 @@ def get_cached_translation(text, delay, cache):
 # =============================================================================
 
 def process_file(src_path, dst_path, dst_dir, delay, cache, debug=False):
-    """Lê arquivo PHP, traduz valores de $msg_arr, escreve no destino."""
+    """Lê arquivo PHP, traduz strings localizáveis, escreve no destino."""
     with open(src_path, 'r', encoding='utf-8') as f:
         src_lines = f.readlines()
 
@@ -382,12 +425,7 @@ def process_file(src_path, dst_path, dst_dir, delay, cache, debug=False):
             line = src_lines[i]
             stripped = line.rstrip('\n')
 
-            m = SINGLE_QUOTE_RE.match(stripped)
-            quote_char = "'"
-
-            if not m:
-                m = DOUBLE_QUOTE_RE.match(stripped)
-                quote_char = '"'
+            m, quote_char = match_translatable_line(stripped)
 
             if m:
                 prefix = m.group(1)
@@ -453,8 +491,8 @@ def _looks_untranslated(text):
     if len(text) <= 10:
         return False
 
-    # Strings com placeholders — podem ser so placeholders
-    if '{' in text:
+    # Strings com placeholders ({name} ou :name) — podem ser so placeholders
+    if PLACEHOLDER_RE.search(text):
         return False
 
     # URLs, emails, paths
@@ -553,13 +591,11 @@ def validate_translation(src_dir, dst_dir):
 
         # Comparar linha por linha
         for i, (src_line, dst_line) in enumerate(zip(src_lines, dst_lines), 1):
-            src_m = SINGLE_QUOTE_RE.match(src_line.rstrip('\n')) or \
-                    DOUBLE_QUOTE_RE.match(src_line.rstrip('\n'))
-            dst_m = SINGLE_QUOTE_RE.match(dst_line.rstrip('\n')) or \
-                    DOUBLE_QUOTE_RE.match(dst_line.rstrip('\n'))
+            src_m, _ = match_translatable_line(src_line.rstrip('\n'))
+            dst_m, _ = match_translatable_line(dst_line.rstrip('\n'))
 
             if not src_m or not dst_m:
-                continue  # Linha não é $msg_arr
+                continue  # Linha não é string localizável
 
             src_key = src_m.group(1)  # prefix com chave
             src_val = src_m.group(2)
@@ -806,7 +842,7 @@ def main():
 
         if not candidates:
             print("❌ Nenhum diretório de localização encontrado.")
-            print("\nDica: Procure por diretórios que contenham arquivos .php com $msg_arr")
+            print("\nDica: Procure por diretórios que contenham arquivos .php com strings localizáveis")
             sys.exit(1)
 
         # Filtrar apenas diretórios com idioma 'en'
